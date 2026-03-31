@@ -1,4 +1,5 @@
 const dotenv = require('dotenv');
+const bcrypt = require('bcrypt');
 const { randomUUID } = require('crypto');
 const { FieldValue } = require('firebase-admin/firestore');
 const { initializeFirebase, getDb } = require('../src/config/firebase');
@@ -12,6 +13,8 @@ const db = getDb();
 async function seed() {
   const userRef = db.collection('users').doc();
   const officerRef = db.collection('users').doc();
+  const defaultOfficerEmail = 'officer@test.com';
+  const officerAuthRef = db.collection('officers').doc(defaultOfficerEmail);
   const caseRef = db.collection('cases').doc();
   const evidenceRef = db.collection('evidence').doc();
   const keyRef = db.collection('keys').doc();
@@ -54,6 +57,14 @@ async function seed() {
     },
     createdAt: now,
     updatedAt: now,
+  };
+
+  const officerAuthDoc = {
+    id: officerAuthRef.id,
+    email: defaultOfficerEmail,
+    password: await bcrypt.hash('123456', 10),
+    role: 'officer',
+    createdAt: now,
   };
 
   const caseDoc = {
@@ -122,6 +133,7 @@ async function seed() {
 
   const adminLogDoc = {
     officerId: officerRef.id,
+    officerEmail: defaultOfficerEmail,
     action: 'CASE_ASSIGNED',
     caseId: caseRef.id,
     evidenceId: evidenceRef.id,
@@ -139,6 +151,7 @@ async function seed() {
   const batch = db.batch();
   batch.set(userRef, userDoc);
   batch.set(officerRef, officerDoc);
+  batch.set(officerAuthRef, officerAuthDoc);
   batch.set(caseRef, caseDoc);
   batch.set(evidenceRef, evidenceDoc);
   batch.set(db.collection('sos_logs').doc(), sosDoc);
@@ -150,6 +163,7 @@ async function seed() {
   console.log('Seed completed successfully.');
   console.log('Created documents:');
   console.log('users:', userRef.id, officerRef.id);
+  console.log('officers:', officerAuthRef.id, defaultOfficerEmail);
   console.log('cases:', caseRef.id);
   console.log('evidence:', evidenceRef.id);
   console.log('keys:', keyRef.id);
