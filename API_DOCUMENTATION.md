@@ -127,6 +127,24 @@ Success:
 }
 ```
 
+### GET /evidence/:id/certificate
+Protected. Generates and downloads a Section 65B certificate PDF.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Response headers:
+- `Content-Type: application/pdf`
+- `Content-Disposition: attachment; filename="certificate_<evidenceId>.pdf"`
+
+Response body:
+- PDF file buffer
+
+Notes:
+- Uses evidence metadata: `id`, `fileHash`, `arweaveTxId`, `polygonTxHash`, `fileType`, `createdAt`
+- Logs action in `admin_logs` as `GENERATE_CERTIFICATE`
+- Requires victim consent (`consentGiven = true`)
+
 ---
 
 ## User/Victim APIs
