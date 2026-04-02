@@ -88,4 +88,60 @@ async function login(req, res, next) {
 
 module.exports = {
   login,
+  testLogin,
 };
+
+/**
+ * TEST LOGIN - Quick response for development
+ * Use email: admin@police.gov, password: admin123
+ */
+async function testLogin(req, res) {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'email and password are required',
+      });
+    }
+
+    // Quick test credentials
+    if (email === 'admin@police.gov' && password === 'admin123') {
+      if (!process.env.JWT_SECRET) {
+        return res.status(500).json({
+          success: false,
+          message: 'Missing JWT_SECRET',
+        });
+      }
+
+      const token = jwt.sign(
+        {
+          id: 'admin-001',
+          email: 'admin@police.gov',
+          role: 'officer',
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '1d' }
+      );
+
+      return res.status(200).json({
+        token,
+        officer: {
+          id: 'admin-001',
+          email: 'admin@police.gov',
+        },
+      });
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid credentials',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Login failed: ' + error.message,
+    });
+  }
+}

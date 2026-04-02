@@ -13,6 +13,7 @@ function createEvidenceMetadata(metadata) {
     polygonTxHash: metadata.polygonTxHash || null,
     keyHex: metadata.keyHex,
     ivHex: metadata.ivHex,
+    sourceContent: metadata.sourceContent || null,
     fileType: metadata.fileType || 'application/octet-stream',
     consentGiven: Boolean(metadata.consentGiven),
     consentedAt: metadata.consentGiven ? new Date().toISOString() : null,

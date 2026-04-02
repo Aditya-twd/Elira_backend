@@ -63,9 +63,9 @@ Protected route header format:
 
 `Authorization: Bearer <token>`
 
-## 2) Evidence Access (Consent-Gated)
+## 2) Evidence Access
 
-Officer can only list/view/verify evidence after victim consent is set to true.
+Officer can list consent-approved evidence, view decrypted evidence after victim consent is set to true, and verify evidence metadata by ID.
 
 ### GET /evidence
 Protected. Returns only consent-approved evidence metadata.
@@ -115,7 +115,7 @@ Common errors:
 ```
 
 ### GET /evidence/:id/verify
-Protected. Returns verification metadata.
+Protected. Returns verification metadata for any known evidence ID.
 
 Success:
 ```json
@@ -144,6 +144,53 @@ Notes:
 - Uses evidence metadata: `id`, `fileHash`, `arweaveTxId`, `polygonTxHash`, `fileType`, `createdAt`
 - Logs action in `admin_logs` as `GENERATE_CERTIFICATE`
 - Requires victim consent (`consentGiven = true`)
+
+### POST /evidence/certificate
+Protected. Generates and downloads a single certificate PDF for one or many evidence IDs.
+
+Headers:
+- `Authorization: Bearer <token>`
+
+Request (single):
+```json
+{
+  "evidenceId": "1"
+}
+```
+
+Request (multiple):
+```json
+{
+  "evidenceIds": ["1", "2", "3"]
+}
+```
+
+Response headers:
+- `Content-Type: application/pdf`
+- `Content-Disposition: attachment; filename="certificate_<evidenceId>.pdf"` for single ID
+- `Content-Disposition: attachment; filename="certificate_bulk_<timestamp>.pdf"` for multiple IDs
+
+Response body:
+- PDF file buffer
+
+Common errors:
+```json
+{
+  "success": false,
+  "message": "evidenceIds or evidenceId is required"
+}
+```
+
+```json
+{
+  "success": false,
+  "message": "missing metadata",
+  "missingIds": ["9"]
+}
+```
+
+### POST /evidence/:id/certificate
+Protected alias for single-evidence certificate generation.
 
 ---
 
