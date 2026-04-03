@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install production dependencies first for layer cache reuse.
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 
 FROM node:20-alpine AS runtime
 
