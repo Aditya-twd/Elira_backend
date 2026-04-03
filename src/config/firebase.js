@@ -1,5 +1,7 @@
 const admin = require('firebase-admin');
 const { getFirestore } = require('firebase-admin/firestore');
+const fs = require('fs');
+const path = require('path');
 
 let db;
 
@@ -39,7 +41,37 @@ function buildCredential() {
   }
 
   if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    const configuredPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const candidatePaths = [
+      configuredPath,
+      path.join(process.cwd(), path.basename(configuredPath)),
+      path.join('/app', path.basename(configuredPath)),
+      path.join(process.cwd(), 'serviceAccountKey.json'),
+    ];
+
+    const resolvedPath = candidatePaths.find((candidate) => fs.existsSync(candidate));
+
+    if (!resolvedPath) {
+      throw new Error(
+        `GOOGLE_APPLICATION_CREDENTIALS is set to "${configuredPath}", but that file is not present in this runtime. ` +
+          'For container deployments, set FIREBASE_SERVICE_ACCOUNT_JSON (recommended) or mount a credentials file inside the container and point GOOGLE_APPLICATION_CREDENTIALS to that in-container path.'
+      );
+    }
+
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = resolvedPath;
     return admin.credential.applicationDefault();
+  }
+
+  const defaultServiceAccountPath = path.join(process.cwd(), 'serviceAccountKey.json');
+
+  if (fs.existsSync(defaultServiceAccountPath)) {
+    const serviceAccount = JSON.parse(fs.readFileSync(defaultServiceAccountPath, 'utf8'));
+
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
+
+    return admin.credential.cert(serviceAccount);
   }
 
   throw new Error(
