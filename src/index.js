@@ -9,7 +9,18 @@ const { notFound } = require('./middlewares/notFound');
 const { errorHandler } = require('./middlewares/errorHandler');
 
 dotenv.config();
-initializeFirebase();
+
+const requireFirebaseOnBoot = String(process.env.REQUIRE_FIREBASE_ON_BOOT || '').toLowerCase() === 'true';
+
+try {
+  initializeFirebase();
+} catch (error) {
+  if (requireFirebaseOnBoot) {
+    throw error;
+  }
+
+  console.warn('[startup] Firebase initialization skipped:', error.message);
+}
 
 const app = express();
 const port = process.env.PORT || 5000;
