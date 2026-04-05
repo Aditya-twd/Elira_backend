@@ -29,6 +29,48 @@ Response:
 
 ## 1) Authentication
 
+### POST /auth/register
+User registration (citizen app user).
+
+Request:
+```json
+{
+  "name": "Barkha Sharma",
+  "email": "barkha@example.com",
+  "password": "strongpass123",
+  "phone": "+919900001234"
+}
+```
+
+Success:
+```json
+{
+  "success": true,
+  "data": {
+    "id": "<user_doc_id>",
+    "name": "Barkha Sharma",
+    "email": "barkha@example.com",
+    "phone": "+919900001234",
+    "role": "citizen"
+  }
+}
+```
+
+Common errors:
+```json
+{
+  "success": false,
+  "message": "name, email and password are required"
+}
+```
+
+```json
+{
+  "success": false,
+  "message": "Email already registered"
+}
+```
+
 ### POST /auth/login
 Officer login.
 

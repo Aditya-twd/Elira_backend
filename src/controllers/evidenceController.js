@@ -5,7 +5,9 @@ const { uploadToArweave } = require('../services/arweaveService');
 const {
   createEvidenceMetadata,
   listEvidenceMetadata,
+  listEvidenceMetadataFromFirestore,
   getEvidenceMetadataById,
+  getEvidenceMetadataByIdFromFirestore,
   setEvidencePolygonTxHash,
   setEvidenceConsent,
   updateEvidenceAI,
@@ -19,6 +21,50 @@ const {
   isAudioOrVideo,
   isDocument,
 } = require('../services/aiService');
+
+const USE_MOCK_AI_DATA =
+  String(process.env.AI_USE_MOCK_DATA || 'true').toLowerCase() === 'true';
+
+function inferContentLength(fileContent) {
+  if (Buffer.isBuffer(fileContent)) {
+    return fileContent.length;
+  }
+  return String(fileContent || '').length;
+}
+
+function buildMockTranscript(evidenceId, fileType, fileContent) {
+  const bytes = inferContentLength(fileContent);
+  return [
+    `Mock transcript generated for evidence ${evidenceId}.`,
+    `Detected media type: ${fileType || 'unknown'}.`,
+    `Approximate payload size: ${bytes} bytes.`,
+    'This is placeholder AI output and not from live inference.',
+  ].join(' ');
+}
+
+function buildMockAnalysis(transcript, fileType) {
+  const lowercase = String(transcript || '').toLowerCase();
+  const sentiment = lowercase.includes('urgent') || lowercase.includes('help')
+    ? 'distressed'
+    : 'neutral';
+  const riskLevel = sentiment === 'distressed' ? 'MEDIUM' : 'LOW';
+
+  return {
+    summary: `Mock analysis for ${fileType || 'evidence'}: this item has been processed using simulated AI output.`,
+    sentiment,
+    riskLevel,
+    keywords: ['mock', 'evidence', fileType || 'file'].filter(Boolean),
+  };
+}
+
+function buildMockExtraction(evidenceId, fileType) {
+  return {
+    title: `Mock ${fileType || 'document'} evidence`,
+    date: new Date().toISOString().slice(0, 10),
+    description: `Simulated extraction for evidence ${evidenceId}.`,
+    personName: 'Sample Person',
+  };
+}
 
 async function buildCertificatePdf(metadataList) {
   const doc = new PDFDocument({
@@ -111,22 +157,30 @@ async function processEvidenceWithAI(evidence, fileContent, fileType) {
     // Route to appropriate AI service based on file type
     if (isAudioOrVideo(fileType)) {
       // AUDIO/VIDEO: Transcribe → Analyze
-      console.log(`[AI] Starting transcription for evidence ${evidenceId}`);
-      const transcriptionResult = await callTranscribeAI(fileContent, fileType);
+      let transcript;
+      let analysisResult;
+
+      if (USE_MOCK_AI_DATA) {
+        transcript = buildMockTranscript(evidenceId, fileType, fileContent);
+        analysisResult = buildMockAnalysis(transcript, fileType);
+        console.log(`[AI] Mock transcription+analysis generated for evidence ${evidenceId}`);
+      } else {
+        console.log(`[AI] Starting transcription for evidence ${evidenceId}`);
+        const transcriptionResult = await callTranscribeAI(fileContent, fileType);
+        transcript = transcriptionResult.transcript;
+
+        console.log(`[AI] Transcription complete for evidence ${evidenceId}`);
+        console.log(`[AI] Starting analysis for evidence ${evidenceId}`);
+        analysisResult = await callAnalyzeAI(transcript);
+      }
 
       // Update evidence with transcript
-      updateEvidenceAI(evidenceId, {
-        transcript: transcriptionResult.transcript,
+      await updateEvidenceAI(evidenceId, {
+        transcript,
       });
 
-      console.log(`[AI] Transcription complete for evidence ${evidenceId}`);
-
-      // Send transcript to analysis
-      console.log(`[AI] Starting analysis for evidence ${evidenceId}`);
-      const analysisResult = await callAnalyzeAI(transcriptionResult.transcript);
-
       // Update evidence with analysis results
-      updateEvidenceAI(evidenceId, {
+      await updateEvidenceAI(evidenceId, {
         summary: analysisResult.summary,
         sentiment: analysisResult.sentiment,
         riskLevel: analysisResult.riskLevel,
@@ -149,13 +203,21 @@ async function processEvidenceWithAI(evidence, fileContent, fileType) {
       });
     } else if (isDocument(fileType)) {
       // DOCUMENT: Extract
-      console.log(`[AI] Starting extraction for evidence ${evidenceId}`);
-      const extractionResult = await callExtractAI(fileContent, fileType);
+      let extractionResult;
+      if (USE_MOCK_AI_DATA) {
+        extractionResult = buildMockExtraction(evidenceId, fileType);
+        console.log(`[AI] Mock extraction generated for evidence ${evidenceId}`);
+      } else {
+        console.log(`[AI] Starting extraction for evidence ${evidenceId}`);
+        extractionResult = await callExtractAI(fileContent, fileType);
+      }
+
+      const documentAiPayload = {
+        extractedData: extractionResult,
+      };
 
       // Update evidence with extracted data
-      updateEvidenceAI(evidenceId, {
-        extractedData: extractionResult,
-      });
+      await updateEvidenceAI(evidenceId, documentAiPayload);
 
       console.log(`[AI] Extraction complete for evidence ${evidenceId}`);
 
@@ -174,7 +236,7 @@ async function processEvidenceWithAI(evidence, fileContent, fileType) {
       console.log(`[AI] Skipping processing for evidence ${evidenceId} (file type: ${fileType})`);
     }
   } catch (error) {
-    console.error(`[AI] Processing failed for evidence ${evidence.id}:`, error.message);
+    console.warn(`[AI] Processing failed for evidence ${evidence.id}:`, error.message);
 
     await logAdminAction({
       action: 'AI_AUTO_PROCESS',
@@ -187,9 +249,35 @@ async function processEvidenceWithAI(evidence, fileContent, fileType) {
   }
 }
 
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// Calculate timeout based on file size
+// Accounts for Irys devnet retries (1s + 2s = 3s) plus upload time
+// Irys devnet: ~100KB/s average throughput = 52s for 5MB (6.99MB encrypted)
+// Use 20s base + 15s per MB for safety with retries
+function calculateArweaveTimeout(fileSizeBytes) {
+  const sizeInMB = fileSizeBytes / (1024 * 1024);
+  const calculatedTimeout = 20000 + (sizeInMB * 15000);
+  // Min 40s (account for retry delays), max 180s
+  return Math.max(40000, Math.min(180000, calculatedTimeout));
+}
+
 async function uploadEvidence(req, res, next) {
   try {
-    const { fileContent, fileType } = req.body;
+    const { fileContent, fileType, userId } = req.body;
 
     if (!fileContent) {
       return res.status(400).json({
@@ -198,28 +286,64 @@ async function uploadEvidence(req, res, next) {
       });
     }
 
+    if (!userId || !String(userId).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId is required',
+      });
+    }
+
     const fileHash = sha256(fileContent);
     const { encryptedBuffer, keyHex, ivHex } = encryptContent(fileContent);
-    const arweaveTxId = await uploadToArweave(encryptedBuffer);
+    let arweaveTxId = null;
+    let arweaveFallbackReason = null;
 
-    const evidence = createEvidenceMetadata({
+    const arweaveTimeout = calculateArweaveTimeout(encryptedBuffer.length);
+    console.log(`Encrypting file for Arweave (${encryptedBuffer.length} bytes, ${arweaveTimeout}ms timeout)...`);
+
+    try {
+      arweaveTxId = await withTimeout(
+        uploadToArweave(encryptedBuffer),
+        arweaveTimeout,
+        'Arweave upload'
+      );
+      console.log(`✓ Arweave upload successful: ${arweaveTxId}`);
+    } catch (arweaveError) {
+      arweaveFallbackReason = arweaveError.message;
+      if (arweaveError.code === 'IRYS_INSUFFICIENT_BALANCE') {
+        console.warn(`Irys wallet underfunded, using local fallback: ${arweaveFallbackReason}`);
+      } else {
+        console.warn(`Arweave upload failed, using local fallback: ${arweaveFallbackReason}`);
+      }
+    }
+
+    const evidence = await createEvidenceMetadata({
+      userId: String(userId).trim(),
       fileHash,
       keyHex,
       ivHex,
       arweaveTxId,
       sourceContent: fileContent,
       fileType,
+      storageMode: arweaveTxId ? 'arweave' : 'local',
+      arweaveFallbackReason,
     });
 
     // Blockchain step is executed after hash generation and Arweave upload.
     // Gracefully handle blockchain errors - don't fail upload if blockchain is unavailable
     let polygonTxHash = null;
-    try {
-      polygonTxHash = await storeEvidenceOnChain(fileHash, arweaveTxId);
-      setEvidencePolygonTxHash(evidence.id, polygonTxHash);
-    } catch (blockchainError) {
-      console.warn(`Blockchain storage failed (non-critical): ${blockchainError.message}`);
-      // Continue without blockchain - evidence is still stored on Arweave
+    if (arweaveTxId) {
+      try {
+        polygonTxHash = await withTimeout(
+          storeEvidenceOnChain(fileHash, arweaveTxId),
+          25000,
+          'Blockchain storage'
+        );
+        setEvidencePolygonTxHash(evidence.id, polygonTxHash);
+      } catch (blockchainError) {
+        console.warn(`Blockchain storage failed (non-critical): ${blockchainError.message}`);
+        // Continue without blockchain - evidence is still stored locally/Arweave-backed
+      }
     }
 
     // Trigger AI processing asynchronously (don't wait for it to complete)
@@ -232,13 +356,31 @@ async function uploadEvidence(req, res, next) {
       success: true,
       data: {
         id: evidence.id,
+        userId: evidence.userId,
         fileHash,
+        keyHex,
+        ivHex,
         arweaveTxId,
         polygonTxHash,
+        storageMode: arweaveTxId ? 'arweave' : 'local',
+        arweaveFallbackReason,
         consentGiven: false,
       },
     });
   } catch (error) {
+    const message = String(error?.message || '').toLowerCase();
+    if (
+      message.includes('maximum') ||
+      message.includes('document') && message.includes('size') ||
+      message.includes('invalid_argument')
+    ) {
+      return res.status(413).json({
+        success: false,
+        message:
+          'Evidence metadata exceeds storage limits. The raw file payload is no longer stored in Firestore metadata. Please retry upload.',
+      });
+    }
+
     return next(error);
   }
 }
@@ -261,12 +403,40 @@ function toFallbackBuffer(sourceContent) {
   return Buffer.from(contentString, 'utf8');
 }
 
-function listEvidence(req, res) {
-  return res.status(200).json(
-    listEvidenceMetadata({
+async function listEvidence(req, res, next) {
+  try {
+    const data = await listEvidenceMetadataFromFirestore({
       onlyConsented: true,
-    })
-  );
+    });
+
+    return res.status(200).json(data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function listEvidenceForCitizen(req, res, next) {
+  try {
+    const userId = String(req.query.userId || '').trim();
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId query parameter is required',
+      });
+    }
+
+    const data = await listEvidenceMetadataFromFirestore({
+      onlyConsented: false,
+      userId,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    return next(error);
+  }
 }
 
 async function getEvidenceById(req, res, next) {
@@ -289,7 +459,10 @@ async function getEvidenceById(req, res, next) {
       });
     }
 
-    const metadata = getEvidenceMetadataById(id);
+    let metadata = await getEvidenceMetadataByIdFromFirestore(id);
+    if (!metadata) {
+      metadata = getEvidenceMetadataById(id);
+    }
 
     if (!metadata) {
       await logAdminAction({
@@ -392,7 +565,10 @@ async function verifyEvidenceById(req, res, next) {
       });
     }
 
-    const metadata = getEvidenceMetadataById(id);
+    let metadata = await getEvidenceMetadataByIdFromFirestore(id);
+    if (!metadata) {
+      metadata = getEvidenceMetadataById(id);
+    }
 
     if (!metadata) {
       await logAdminAction({
@@ -579,6 +755,7 @@ async function generateEvidenceCertificates(req, res, next) {
 module.exports = {
   uploadEvidence,
   listEvidence,
+  listEvidenceForCitizen,
   getEvidenceById,
   verifyEvidenceById,
   giveEvidenceConsent,

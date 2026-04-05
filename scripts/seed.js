@@ -117,6 +117,8 @@ async function seed() {
       entities: ['Transit Hub', 'Witness 1'],
     },
     status: 'uploaded',
+    consentGiven: true,
+    consentedAt: now,
     createdAt: now,
   };
 

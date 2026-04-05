@@ -2,6 +2,7 @@ const express = require('express');
 const {
 	uploadEvidence,
 	listEvidence,
+	listEvidenceForCitizen,
 	getEvidenceById,
 	verifyEvidenceById,
 	giveEvidenceConsent,
@@ -13,6 +14,7 @@ const { requireOfficerAuth } = require('../middlewares/authMiddleware');
 const router = express.Router();
 
 router.get('/', requireOfficerAuth, listEvidence);
+router.get('/citizen', listEvidenceForCitizen);
 router.post('/certificate', requireOfficerAuth, generateEvidenceCertificates);
 router.post('/:id/certificate', requireOfficerAuth, generateEvidenceCertificates);
 router.get('/:id/verify', requireOfficerAuth, verifyEvidenceById);

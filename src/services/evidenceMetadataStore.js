@@ -1,16 +1,70 @@
+const { collection } = require('./firestoreService');
+const { randomUUID } = require('crypto');
+
 const evidenceById = Object.create(null);
 const evidenceIds = [];
-let evidenceCounter = 0;
 
-function createEvidenceMetadata(metadata) {
-  evidenceCounter += 1;
-  const id = String(evidenceCounter);
+function generateEvidenceId() {
+  if (typeof randomUUID === 'function') {
+    return randomUUID();
+  }
+
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function persistRecord(record) {
+  const { sourceContent, ...safeRecord } = record;
+  return collection('evidence').doc(String(record.id)).set(safeRecord, { merge: true });
+}
+
+function persistPartial(id, data) {
+  return collection('evidence').doc(String(id)).set(data, { merge: true });
+}
+
+function normalizeRecord(raw = {}) {
+  return {
+    id: String(raw.id || ''),
+    userId: String(raw.userId || ''),
+    fileHash: raw.fileHash || '',
+    arweaveTxId: raw.arweaveTxId || '',
+    polygonTxHash: raw.polygonTxHash || null,
+    storageMode: raw.storageMode || 'arweave',
+    arweaveFallbackReason: raw.arweaveFallbackReason || null,
+    keyHex: raw.keyHex || '',
+    ivHex: raw.ivHex || '',
+    sourceContent: raw.sourceContent || null,
+    fileType: raw.fileType || 'application/octet-stream',
+    consentGiven: Boolean(raw.consentGiven),
+    consentedAt: raw.consentedAt || null,
+    consentBy: raw.consentBy || null,
+    createdAt: raw.createdAt || new Date().toISOString(),
+    ai: {
+      transcript: raw.ai?.transcript ?? null,
+      summary: raw.ai?.summary ?? null,
+      sentiment: raw.ai?.sentiment ?? null,
+      riskLevel: raw.ai?.riskLevel ?? null,
+      keywords: Array.isArray(raw.ai?.keywords) ? raw.ai.keywords : [],
+      extractedData: {
+        title: raw.ai?.extractedData?.title ?? null,
+        date: raw.ai?.extractedData?.date ?? null,
+        description: raw.ai?.extractedData?.description ?? null,
+        personName: raw.ai?.extractedData?.personName ?? null,
+      },
+    },
+  };
+}
+
+async function createEvidenceMetadata(metadata) {
+  const id = generateEvidenceId();
 
   const record = {
     id,
+    userId: metadata.userId || '',
     fileHash: metadata.fileHash,
     arweaveTxId: metadata.arweaveTxId,
     polygonTxHash: metadata.polygonTxHash || null,
+    storageMode: metadata.storageMode || 'arweave',
+    arweaveFallbackReason: metadata.arweaveFallbackReason || null,
     keyHex: metadata.keyHex,
     ivHex: metadata.ivHex,
     sourceContent: metadata.sourceContent || null,
@@ -36,6 +90,7 @@ function createEvidenceMetadata(metadata) {
 
   evidenceById[id] = record;
   evidenceIds.push(id);
+  await persistRecord(record);
 
   return record;
 }
@@ -47,6 +102,7 @@ function setEvidencePolygonTxHash(id, polygonTxHash) {
   }
 
   record.polygonTxHash = polygonTxHash;
+  persistPartial(id, { polygonTxHash }).catch(() => {});
   return record;
 }
 
@@ -62,9 +118,13 @@ function listEvidenceMetadata(options = {}) {
 
     return {
       id: record.id,
+      userId: record.userId,
       fileHash: record.fileHash,
       arweaveTxId: record.arweaveTxId,
+      keyHex: record.keyHex,
+      ivHex: record.ivHex,
       fileType: record.fileType,
+      storageMode: record.storageMode,
       consentGiven: record.consentGiven,
       consentedAt: record.consentedAt,
       createdAt: record.createdAt,
@@ -85,6 +145,11 @@ function setEvidenceConsent(id, consentGiven, consentBy = null) {
   record.consentGiven = Boolean(consentGiven);
   record.consentedAt = record.consentGiven ? new Date().toISOString() : null;
   record.consentBy = consentBy;
+  persistPartial(id, {
+    consentGiven: record.consentGiven,
+    consentedAt: record.consentedAt,
+    consentBy: record.consentBy,
+  }).catch(() => {});
   return record;
 }
 
@@ -131,7 +196,7 @@ function setEvidenceAIExtractedData(id, extractedData) {
  * @param {string} id - Evidence ID
  * @param {Object} aiData - AI data to update (can include transcript, summary, sentiment, riskLevel, keywords, extractedData)
  */
-function updateEvidenceAI(id, aiData) {
+async function updateEvidenceAI(id, aiData) {
   const record = evidenceById[String(id)];
   if (!record) {
     return null;
@@ -161,13 +226,39 @@ function updateEvidenceAI(id, aiData) {
     };
   }
 
+  const aiSnapshot = JSON.parse(JSON.stringify(record.ai));
+  await persistPartial(id, { ai: aiSnapshot });
+
   return record;
+}
+
+async function listEvidenceMetadataFromFirestore(options = {}) {
+  const { onlyConsented = false, userId = null } = options;
+
+  let query = collection('evidence');
+  if (onlyConsented) {
+    query = query.where('consentGiven', '==', true);
+  }
+  if (userId) {
+    query = query.where('userId', '==', String(userId));
+  }
+
+  const snapshot = await query.get();
+  return snapshot.docs.map((doc) => normalizeRecord({ id: doc.id, ...doc.data() }));
+}
+
+async function getEvidenceMetadataByIdFromFirestore(id) {
+  const doc = await collection('evidence').doc(String(id)).get();
+  if (!doc.exists) return null;
+  return normalizeRecord({ id: doc.id, ...doc.data() });
 }
 
 module.exports = {
   createEvidenceMetadata,
   listEvidenceMetadata,
+  listEvidenceMetadataFromFirestore,
   getEvidenceMetadataById,
+  getEvidenceMetadataByIdFromFirestore,
   setEvidencePolygonTxHash,
   setEvidenceConsent,
   setEvidenceAITranscript,
